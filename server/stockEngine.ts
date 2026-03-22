@@ -1,0 +1,882 @@
+/**
+ * 台股技術指標計算引擎（TypeScript 版）
+ * 使用 yahoo-finance2 取代 Python yfinance，完全在 Node.js 中執行
+ * 取代原有的 Python Flask 服務（stock_service.py）
+ */
+import yahooFinance from "yahoo-finance2";
+import pLimit from "p-limit";
+import { updateScreenerRun, insertScreenerResults, createNotification } from "./db.js";
+
+// ─── 型別定義 ──────────────────────────────────────────────────────────────
+
+export interface OhlcvBar {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface ConditionResult {
+  pass: boolean;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+export interface ScreenResult {
+  stockCode: string;
+  stockName: string;
+  currentPrice: number;
+  priceChange: number;
+  priceChangePct: number;
+  volume: number;
+  condMaAligned: boolean;
+  condVolumeSpike: boolean;
+  condObvRising: boolean;
+  condVrAbove: boolean;
+  condBullishBreakout: boolean;
+  condVixLow: boolean;
+  condKdGoldenCross: boolean;
+  condMonthlyKdLow: boolean;
+  condPbrLow: boolean;
+  condYieldHigh: boolean;
+  conditionsMetCount: number;
+  maValues: Record<string, number>;
+  volumeRatio: number | null;
+  vrValue: number | null;
+  obvValue: number | null;
+  breakoutPrice: number | null;
+  vixValue: number | null;
+  kValue: number | null;
+  dValue: number | null;
+  monthlyKValue: number | null;
+  pbrValue: number | null;
+  yieldValue: number | null;
+  details: {
+    ma: ConditionResult;
+    volume: ConditionResult;
+    obv: ConditionResult;
+    vr: ConditionResult;
+    breakout: ConditionResult;
+    vix: ConditionResult;
+    kd: ConditionResult;
+    monthlyKd: ConditionResult;
+    pbr: ConditionResult;
+    yield: ConditionResult;
+  };
+}
+
+export interface ChartData {
+  dates: string[];
+  ohlcv: OhlcvBar[];
+  ma5: (number | null)[];
+  ma10: (number | null)[];
+  ma20: (number | null)[];
+  ma40: (number | null)[];
+  obv: (number | null)[];
+  vr26: (number | null)[];
+}
+
+export interface ScreenParams {
+  maPeriods?: number[];
+  volumeMultiplier?: number;
+  vrThreshold?: number;
+  vrPeriod?: number;
+  bullishMinPct?: number;
+  scanLimit?: number;
+  minConditions?: number;
+  // Group 2
+  vixThreshold?: number;
+  kdPeriod?: number;
+  kdSmooth?: number;
+  monthlyKdThreshold?: number;
+  pbrMax?: number;
+  yieldMin?: number;
+}
+
+// ─── 股票清單快取 ──────────────────────────────────────────────────────────
+
+let _stockCache: Array<[string, string]> = [];
+let _stockCacheTime: number | null = null;
+const STOCK_CACHE_TTL = 3600 * 1000; // 1 hour
+
+async function fetchStockList(): Promise<Array<[string, string]>> {
+  const stocks: Array<[string, string]> = [];
+  const seen = new Set<string>();
+
+  // 1. TWSE 上市股票
+  try {
+    const r = await fetch(
+      "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+      { signal: AbortSignal.timeout(15000) }
+    );
+    if (r.ok) {
+      const data = (await r.json()) as Array<{ Code?: string; Name?: string }>;
+      for (const item of data) {
+        const code = item.Code ?? "";
+        const name = item.Name ?? "";
+        if (code && name && /^\d{4}$/.test(code)) {
+          stocks.push([code, name]);
+          seen.add(code);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[StockList] TWSE fetch error:", e);
+  }
+
+  // 2. TPEX 上櫃股票
+  try {
+    const r2 = await fetch(
+      "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis",
+      {
+        signal: AbortSignal.timeout(15000),
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+      }
+    );
+    if (r2.ok) {
+      const data2 = (await r2.json()) as Array<{
+        SecuritiesCompanyCode?: string;
+        CompanyName?: string;
+      }>;
+      for (const item of data2) {
+        const code = item.SecuritiesCompanyCode ?? "";
+        const name = item.CompanyName ?? "";
+        if (code && name && /^\d{4}$/.test(code) && !seen.has(code)) {
+          stocks.push([code, name]);
+          seen.add(code);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[StockList] TPEX fetch error:", e);
+  }
+
+  return stocks;
+}
+
+export async function getTwStocks(): Promise<Array<[string, string]>> {
+  const now = Date.now();
+  if (_stockCache.length > 0 && _stockCacheTime && now - _stockCacheTime < STOCK_CACHE_TTL) {
+    return _stockCache;
+  }
+  const list = await fetchStockList();
+  if (list.length > 0) {
+    _stockCache = list;
+    _stockCacheTime = now;
+  }
+  return _stockCache.length > 0 ? _stockCache : list;
+}
+// ─── 財務 基本面 數據 快取 ──────────────────────────────────────────────────
+
+interface StockFundamentals {
+  pbr: number | null;
+  yield: number | null;
+}
+
+let _fundamentalsCache: Map<string, StockFundamentals> = new Map();
+let _fundamentalsCacheTime: number | null = null;
+const FUNDAMENTALS_CACHE_TTL = 4 * 3600 * 1000; // 4 hours
+
+async function fetchFundamentals(): Promise<Map<string, StockFundamentals>> {
+  const map = new Map<string, StockFundamentals>();
+
+  // 1. TWSE 上市股票 PBR/Yield
+  try {
+    const r = await fetch("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL", { signal: AbortSignal.timeout(15000) });
+    if (r.ok) {
+      const data = await r.json() as Array<{ Code: string; PBratio: string; DividendYield: string }>;
+      for (const item of data) {
+        map.set(item.Code, {
+          pbr: parseFloat(item.PBratio) || null,
+          yield: parseFloat(item.DividendYield) || null
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("[Fundamentals] TWSE fetch error:", e);
+  }
+
+  // 2. TPEX 上櫃股票 PBR/Yield
+  try {
+    const r2 = await fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis", {
+      signal: AbortSignal.timeout(15000),
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" }
+    });
+    if (r2.ok) {
+      const data2 = await r2.json() as Array<{ SecuritiesCompanyCode: string; YieldPct: string; PBRatio: string }>;
+      for (const item of data2) {
+        if (!map.has(item.SecuritiesCompanyCode)) {
+          map.set(item.SecuritiesCompanyCode, {
+            pbr: parseFloat(item.PBRatio) || null,
+            yield: parseFloat(item.YieldPct) || null
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[Fundamentals] TPEX fetch error:", e);
+  }
+
+  return map;
+}
+
+async function getFundamentals(): Promise<Map<string, StockFundamentals>> {
+  const now = Date.now();
+  if (_fundamentalsCache.size > 0 && _fundamentalsCacheTime && now - _fundamentalsCacheTime < FUNDAMENTALS_CACHE_TTL) {
+    return _fundamentalsCache;
+  }
+  const map = await fetchFundamentals();
+  if (map.size > 0) {
+    _fundamentalsCache = map;
+    _fundamentalsCacheTime = now;
+  }
+  return map;
+}
+
+// ─── VIX 數據獲取 ───────────────────────────────────────────────────────────
+
+let _vixCache: number | null = null;
+let _vixCacheTime: number | null = null;
+const VIX_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+async function fetchVix(): Promise<number | null> {
+  // 嘗試從 Yahoo Finance 獲取 CBOE VIX (^VIX)
+  try {
+    const tickers = ["^VIX", "^VIXTW"]; // 優先使用 CBOE VIX
+    for (const ticker of tickers) {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`;
+      try {
+        const resp = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(5000) });
+        if (resp.ok) {
+          const data = await resp.json() as any;
+          const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+          if (typeof price === "number") {
+            console.log(`[VIX] Successfully fetched VIX from ticker ${ticker}:`, price);
+            return price;
+          }
+        }
+      } catch (err) {
+        console.warn(`[VIX] Failed to fetch ${ticker}:`, err);
+      }
+    }
+  } catch (e) {
+    console.warn("[VIX] VIX fetch error:", e);
+  }
+  return null;
+}
+
+async function getVix(): Promise<number | null> {
+  const now = Date.now();
+  if (_vixCache !== null && _vixCacheTime && now - _vixCacheTime < VIX_CACHE_TTL) {
+    return _vixCache;
+  }
+  const val = await fetchVix();
+  if (val !== null) {
+    _vixCache = val;
+    _vixCacheTime = now;
+  }
+  return _vixCache;
+}
+
+// ─── 歷史數據獲取（使用 Yahoo Finance v8 API，繞過 v7 的 429 限制）──────────
+
+const YF_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Accept": "application/json",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+async function fetchV8Chart(ticker: string, range = "6mo"): Promise<OhlcvBar[] | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=${range}`;
+    const resp = await fetch(url, {
+      headers: YF_HEADERS,
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json() as {
+      chart: {
+        result?: Array<{
+          timestamp: number[];
+          indicators: {
+            quote: Array<{
+              open: (number | null)[];
+              high: (number | null)[];
+              low: (number | null)[];
+              close: (number | null)[];
+              volume: (number | null)[];
+            }>;
+          };
+        }>;
+        error?: unknown;
+      };
+    };
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const { timestamp, indicators } = result;
+    const q = indicators.quote[0];
+    if (!timestamp || !q) return null;
+
+    const bars: OhlcvBar[] = [];
+    const seenDates = new Set<string>();
+    for (let i = 0; i < timestamp.length; i++) {
+      const close = q.close[i];
+      if (close == null || close === 0) continue;
+      const date = new Date(timestamp[i] * 1000).toISOString().slice(0, 10);
+      if (seenDates.has(date)) continue;
+      seenDates.add(date);
+
+      bars.push({
+        date,
+        open: q.open[i] ?? close,
+        high: q.high[i] ?? close,
+        low: q.low[i] ?? close,
+        close,
+        volume: q.volume[i] ?? 0,
+      });
+    }
+    return bars.length >= 20 ? bars : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getStockData(
+  symbol: string,
+  _periodDays = 60
+): Promise<OhlcvBar[] | null> {
+  // 使用 6mo range 確保有足夠的 K 棒（約 120 根）
+  let bars = await fetchV8Chart(`${symbol}.TW`, "6mo");
+  if (!bars || bars.length < 20) {
+    bars = await fetchV8Chart(`${symbol}.TWO`, "6mo");
+  }
+  if (!bars || bars.length < 20) return null;
+
+  // Final safety: deduplicate by date and sort ascending
+  const finalBars: OhlcvBar[] = [];
+  const seenDates = new Set<string>();
+  for (const b of bars) {
+    if (seenDates.has(b.date)) continue;
+    seenDates.add(b.date);
+    finalBars.push(b);
+  }
+
+  return finalBars.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export async function getMonthlyStockData(symbol: string): Promise<OhlcvBar[] | null> {
+  // Yahoo chart API with 1mo interval
+  try {
+    const ticker = `${symbol}.TW`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1mo&range=2y`;
+    let resp = await fetch(url, { headers: YF_HEADERS, signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) {
+      const ticker2 = `${symbol}.TWO`;
+      const url2 = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker2}?interval=1mo&range=2y`;
+      resp = await fetch(url2, { headers: YF_HEADERS, signal: AbortSignal.timeout(15000) });
+    }
+    if (!resp.ok) return null;
+    const data = await resp.json() as any;
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const { timestamp, indicators } = result;
+    const q = indicators.quote[0];
+    if (!timestamp || !q) return null;
+
+    const bars: OhlcvBar[] = [];
+    for (let i = 0; i < timestamp.length; i++) {
+      const close = q.close[i];
+      if (close == null || close === 0) continue;
+      bars.push({
+        date: new Date(timestamp[i] * 1000).toISOString().slice(0, 10),
+        open: q.open[i] ?? close,
+        high: q.high[i] ?? close,
+        low: q.low[i] ?? close,
+        close,
+        volume: q.volume[i] ?? 0,
+      });
+    }
+    return bars;
+  } catch {
+    return null;
+  }
+}
+
+// ─── 技術指標計算 ──────────────────────────────────────────────────────────
+
+function calcMa(close: number[], period: number): (number | null)[] {
+  return close.map((_, i) => {
+    if (i < period - 1) return null;
+    const slice = close.slice(i - period + 1, i + 1);
+    return round2(slice.reduce((a, b) => a + b, 0) / period);
+  });
+}
+
+function calcObv(close: number[], volume: number[]): number[] {
+  const obv: number[] = [0];
+  for (let i = 1; i < close.length; i++) {
+    if (close[i] > close[i - 1]) obv.push(obv[i - 1] + volume[i]);
+    else if (close[i] < close[i - 1]) obv.push(obv[i - 1] - volume[i]);
+    else obv.push(obv[i - 1]);
+  }
+  return obv;
+}
+
+function calcVr(close: number[], volume: number[], period = 26): (number | null)[] {
+  return close.map((_, i) => {
+    if (i < period) return null;
+    const wc = close.slice(i - period + 1, i + 1);
+    const wv = volume.slice(i - period + 1, i + 1);
+    let up = 0, down = 0, flat = 0;
+    for (let j = 1; j < wc.length; j++) {
+      const v = wv[j];
+      if (wc[j] > wc[j - 1]) up += v;
+      else if (wc[j] < wc[j - 1]) down += v;
+      else flat += v;
+    }
+    const denom = down + 0.5 * flat;
+    if (denom === 0) return null;
+    return round2(((up + 0.5 * flat) / denom) * 100);
+  });
+}
+
+function round2(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
+function calcKD(bars: OhlcvBar[], n = 9, m1 = 3, m2 = 3): { k: number[]; d: number[] } {
+  const k: number[] = [];
+  const d: number[] = [];
+  let prevK = 50;
+  let prevD = 50;
+
+  for (let i = 0; i < bars.length; i++) {
+    if (i < n - 1) {
+      k.push(50);
+      d.push(50);
+      continue;
+    }
+    const window = bars.slice(i - n + 1, i + 1);
+    const highN = Math.max(...window.map(b => b.high));
+    const lowN = Math.min(...window.map(b => b.low));
+    const close = bars[i].close;
+
+    const rsv = highN === lowN ? 50 : ((close - lowN) / (highN - lowN)) * 100;
+    const currentK = (rsv + (m1 - 1) * prevK) / m1;
+    const currentD = (currentK + (m2 - 1) * prevD) / m2;
+
+    k.push(round2(currentK));
+    d.push(round2(currentD));
+    prevK = currentK;
+    prevD = currentD;
+  }
+  return { k, d };
+}
+
+// ─── 條件檢查 ──────────────────────────────────────────────────────────────
+
+function checkMaAligned(bars: OhlcvBar[], maPeriods: number[]): ConditionResult {
+  const close = bars.map((b) => b.close);
+  const sorted = [...maPeriods].sort((a, b) => a - b);
+  const maMap: Record<number, (number | null)[]> = {};
+  for (const p of sorted) maMap[p] = calcMa(close, p);
+
+  const latestMas: Record<number, number> = {};
+  for (const p of sorted) {
+    const v = maMap[p][close.length - 1];
+    if (v === null) return { pass: false, reason: "MA 數據不足", values: {} };
+    latestMas[p] = v;
+  }
+
+  const latestClose = close[close.length - 1];
+  const priceAboveAllMa = Object.values(latestMas).every((v) => latestClose > v);
+  const maAligned = sorted.every(
+    (p, i) => i === 0 || latestMas[sorted[i - 1]] > latestMas[p]
+  );
+  const shortMa = maMap[sorted[0]].filter((v): v is number => v !== null);
+  const maRising = shortMa.length >= 3 && shortMa[shortMa.length - 1] > shortMa[shortMa.length - 3];
+
+  return {
+    pass: priceAboveAllMa && maAligned && maRising,
+    priceAboveAllMa,
+    maAligned,
+    maRising,
+    values: Object.fromEntries(Object.entries(latestMas).map(([k, v]) => [k, round2(v)])),
+  };
+}
+
+function checkVolumeSpike(bars: OhlcvBar[], multiplier = 1.5): ConditionResult {
+  if (bars.length < 11) return { pass: false, reason: "成交量數據不足" };
+  const volume = bars.map((b) => b.volume);
+  const latest = volume[volume.length - 1];
+  const avg10 = volume.slice(-11, -1).reduce((a, b) => a + b, 0) / 10;
+  if (avg10 === 0) return { pass: false, reason: "均量為零" };
+  const ratio = latest / avg10;
+  return {
+    pass: ratio >= multiplier,
+    latestVolume: Math.round(latest),
+    avgVolume10: Math.round(avg10),
+    ratio: round2(ratio),
+  };
+}
+
+function checkObvRising(bars: OhlcvBar[]): ConditionResult {
+  const close = bars.map((b) => b.close);
+  const volume = bars.map((b) => b.volume);
+  const obv = calcObv(close, volume);
+  if (obv.length < 20) return { pass: false, reason: "OBV 數據不足" };
+  const latest = obv[obv.length - 1];
+  const max20 = Math.max(...obv.slice(-21, -1));
+  const obvNewHigh = latest > max20;
+  const recent5 = obv.slice(-5);
+  const slope = recent5.length >= 3
+    ? (recent5[recent5.length - 1] - recent5[0]) / (recent5.length - 1)
+    : 0;
+  const obvRising = slope > 0;
+  return {
+    pass: obvNewHigh && obvRising,
+    latestObv: round2(latest),
+    obv20Max: round2(max20),
+    obvNewHigh,
+    obvRising,
+  };
+}
+
+function checkVr(bars: OhlcvBar[], threshold = 120, period = 26): ConditionResult {
+  const close = bars.map((b) => b.close);
+  const volume = bars.map((b) => b.volume);
+  const vr = calcVr(close, volume, period);
+  const valid = vr.filter((v): v is number => v !== null);
+  if (valid.length === 0) return { pass: false, reason: "VR 數據不足" };
+  const latest = valid[valid.length - 1];
+  return { pass: latest > threshold, vrValue: round2(latest), threshold };
+}
+
+function checkBullishBreakout(bars: OhlcvBar[], minPct = 2.0): ConditionResult {
+  if (bars.length < 21) return { pass: false, reason: "數據不足" };
+  const latest = bars[bars.length - 1];
+  if (latest.open === 0) return { pass: false, reason: "開盤價為零" };
+  const candlePct = ((latest.close - latest.open) / latest.open) * 100;
+  const isBullish = candlePct >= minPct;
+  const prevHigh = Math.max(...bars.slice(-21, -1).map((b) => b.high));
+  const isBreakout = latest.close > prevHigh;
+  return {
+    pass: isBullish && isBreakout,
+    closePct: round2(candlePct),
+    isBullishCandle: isBullish,
+    prevHigh: round2(prevHigh),
+    isBreakout,
+    currentClose: round2(latest.close),
+  };
+}
+
+function checkVix(vix: number | null, threshold = 30): ConditionResult {
+  if (vix === null) return { pass: false, reason: "VIX 數據不可用" };
+  return { pass: vix <= threshold, vixValue: round2(vix), threshold };
+}
+
+function checkKd(bars: OhlcvBar[], n = 9, m1 = 3, m2 = 3): ConditionResult {
+  const { k, d } = calcKD(bars, n, m1, m2);
+  if (k.length < 2) return { pass: false, reason: "KD 數據不足" };
+  const latestK = k[k.length - 1];
+  const latestD = d[d.length - 1];
+  const prevK = k[k.length - 2];
+  const prevD = d[d.length - 2];
+  const isGoldenCross = prevK <= prevD && latestK > latestD;
+  return { pass: isGoldenCross, kValue: latestK, dValue: latestD, isGoldenCross };
+}
+
+function checkMonthlyKd(bars: OhlcvBar[] | null, threshold = 30): ConditionResult {
+  if (!bars || bars.length < 9) return { pass: false, reason: "月線數據不足" };
+  const { k } = calcKD(bars, 9, 3, 3);
+  const latestK = k[k.length - 1];
+  return { pass: latestK < threshold, kValue: latestK, threshold };
+}
+
+function checkPbr(pbr: number | null, max = 1.2): ConditionResult {
+  if (pbr === null) return { pass: false, reason: "PBR 數據不可用" };
+  return { pass: pbr <= max, pbrValue: pbr, max };
+}
+
+function checkYield(yieldVal: number | null, min = 8.0): ConditionResult {
+  if (yieldVal === null) return { pass: false, reason: "殖利率數據不可用" };
+  return { pass: yieldVal >= min, yieldValue: yieldVal, min };
+}
+
+// ─── 單股篩選 ──────────────────────────────────────────────────────────────
+
+export async function screenStock(
+  symbol: string,
+  name: string,
+  params: ScreenParams = {}
+): Promise<ScreenResult | null> {
+  const maPeriods = params.maPeriods ?? [5, 10, 20, 40];
+  const volumeMultiplier = params.volumeMultiplier ?? 1.5;
+  const vrThreshold = params.vrThreshold ?? 120;
+  const vrPeriod = params.vrPeriod ?? 26;
+  const bullishMinPct = params.bullishMinPct ?? 2.0;
+
+  const bars = await getStockData(symbol, 90);
+  if (!bars || bars.length < 41) return null;
+
+  const latest = bars[bars.length - 1];
+  const prev = bars[bars.length - 2] ?? latest;
+  const priceChange = latest.close - prev.close;
+  const priceChangePct = prev.close !== 0 ? (priceChange / prev.close) * 100 : 0;
+
+  const condMa = checkMaAligned(bars, maPeriods);
+  const condVol = checkVolumeSpike(bars, volumeMultiplier);
+  const condObv = checkObvRising(bars);
+  const condVr = checkVr(bars, vrThreshold, vrPeriod);
+  const condBreakout = checkBullishBreakout(bars, bullishMinPct);
+
+  // Group 2
+  const vix = await getVix();
+  const fundamentalsMap = await getFundamentals();
+  const stockFund = fundamentalsMap.get(symbol) ?? { pbr: null, yield: null };
+  const monthlyBars = await getMonthlyStockData(symbol);
+
+  const condVix = checkVix(vix, params.vixThreshold);
+  const condKd = checkKd(bars, params.kdPeriod, params.kdSmooth, params.kdSmooth);
+  const condMonthlyKd = checkMonthlyKd(monthlyBars, params.monthlyKdThreshold);
+  const condPbr = checkPbr(stockFund.pbr, params.pbrMax);
+  const condYield = checkYield(stockFund.yield, params.yieldMin);
+
+  const conditionsMetCount = [
+    condMa.pass, condVol.pass, condObv.pass, condVr.pass, condBreakout.pass,
+    condVix.pass, condKd.pass, condMonthlyKd.pass, condPbr.pass, condYield.pass
+  ].filter(Boolean).length;
+
+  return {
+    stockCode: symbol,
+    stockName: name,
+    currentPrice: round2(latest.close),
+    priceChange: round2(priceChange),
+    priceChangePct: round2(priceChangePct),
+    volume: Math.round(latest.volume),
+    condMaAligned: condMa.pass,
+    condVolumeSpike: condVol.pass,
+    condObvRising: condObv.pass,
+    condVrAbove: condVr.pass,
+    condBullishBreakout: condBreakout.pass,
+    // Group 2
+    condVixLow: condVix.pass,
+    condKdGoldenCross: condKd.pass,
+    condMonthlyKdLow: condMonthlyKd.pass,
+    condPbrLow: condPbr.pass,
+    condYieldHigh: condYield.pass,
+
+    conditionsMetCount,
+    maValues: (condMa.values as Record<string, number>) ?? {},
+    volumeRatio: (condVol.ratio as number) ?? null,
+    vrValue: (condVr.vrValue as number) ?? null,
+    obvValue: (condObv.latestObv as number) ?? null,
+    breakoutPrice: (condBreakout.prevHigh as number) ?? null,
+    // Group 2 Values
+    vixValue: (condVix.vixValue as number) ?? null,
+    kValue: (condKd.kValue as number) ?? null,
+    dValue: (condKd.dValue as number) ?? null,
+    monthlyKValue: (condMonthlyKd.kValue as number) ?? null,
+    pbrValue: (condPbr.pbrValue as number) ?? null,
+    yieldValue: (condYield.yieldValue as number) ?? null,
+
+    details: { 
+      ma: condMa, volume: condVol, obv: condObv, vr: condVr, breakout: condBreakout,
+      vix: condVix, kd: condKd, monthlyKd: condMonthlyKd, pbr: condPbr, yield: condYield
+    },
+  };
+}
+
+// ─── 批次篩選（背景 Job） ──────────────────────────────────────────────────
+
+export interface ScreenJob {
+  status: "pending" | "running" | "done" | "error" | "cancelled";
+  progress: number;
+  total: number;
+  scanned: number;
+  results: ScreenResult[];
+  error?: string;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+// Removed in-memory _jobs map to support Serverless/Vercel environments.
+// Progress is now tracked directly in the database (screener_runs table).
+
+/**
+ * @deprecated Use database-backed status instead.
+ */
+export function getJob(jobId: string): any {
+  // Return a dummy object to satisfy existing tRPC polling if it hasn't been refactored yet.
+  // Real status is now in the database.
+  return undefined;
+}
+
+/**
+ * @deprecated Use database-backed cancellation if needed.
+ */
+export function cancelJob(jobId: string): boolean {
+  return false;
+}
+
+export async function startScreenJob(
+  runId: number | string,
+  params: ScreenParams,
+  userId?: number
+): Promise<void> {
+  const id = typeof runId === "string" ? parseInt(runId.split("-")[1]) : runId;
+  
+  try {
+    const allStocks = await getTwStocks();
+    const limit = params.scanLimit ?? 100;
+    const minCond = params.minConditions ?? 5;
+    const stocks = limit === 0 ? allStocks : allStocks.slice(0, limit);
+    
+    // Update total count in DB
+    await updateScreenerRun(id, {
+      totalToScan: stocks.length,
+      totalScanned: 0,
+      status: "running",
+    });
+
+    const concurrency = pLimit(5);
+    let scannedCount = 0;
+    const matchedResults: ScreenResult[] = [];
+
+    const tasks = stocks.map(([code, name]) =>
+      concurrency(async () => {
+        try {
+          const result = await screenStock(code, name, params);
+          if (result && result.conditionsMetCount >= minCond) {
+            matchedResults.push(result);
+          }
+        } catch {
+          // ignore individual stock errors
+        } finally {
+          scannedCount += 1;
+          // Update progress in DB every 20 stocks to avoid excessive writes
+          if (scannedCount % 20 === 0 || scannedCount === stocks.length) {
+            await updateScreenerRun(id, {
+              totalScanned: scannedCount,
+              totalMatched: matchedResults.length,
+            });
+          }
+        }
+      })
+    );
+
+    await Promise.all(tasks);
+
+    // Save final results and mark as completed
+    if (matchedResults.length > 0) {
+      const dbResults = matchedResults.map((r) => ({
+        runId: id,
+        stockCode: r.stockCode,
+        stockName: r.stockName,
+        currentPrice: r.currentPrice,
+        priceChange: r.priceChange,
+        priceChangePct: r.priceChangePct,
+        volume: r.volume,
+        condMaAligned: r.condMaAligned,
+        condVolumeSpike: r.condVolumeSpike,
+        condObvRising: r.condObvRising,
+        condVrAbove: r.condVrAbove,
+        condBullishBreakout: r.condBullishBreakout,
+        condVixLow: r.condVixLow,
+        condKdGoldenCross: r.condKdGoldenCross,
+        condMonthlyKdLow: r.condMonthlyKdLow,
+        condPbrLow: r.condPbrLow,
+        condYieldHigh: r.condYieldHigh,
+        conditionsMetCount: r.conditionsMetCount,
+        ma5: r.maValues?.[5] ?? null,
+        ma10: r.maValues?.[10] ?? null,
+        ma20: r.maValues?.[20] ?? null,
+        ma40: r.maValues?.[40] ?? null,
+        volumeRatio: r.volumeRatio,
+        vrValue: r.vrValue,
+        obvValue: r.obvValue,
+        breakoutPrice: r.breakoutPrice,
+        vixValue: r.vixValue,
+        kValue: r.kValue,
+        dValue: r.dValue,
+        monthlyKValue: r.monthlyKValue,
+        pbrValue: r.pbrValue,
+        yieldValue: r.yieldValue,
+      }));
+      await insertScreenerResults(dbResults);
+    }
+
+    await updateScreenerRun(id, {
+      status: "completed",
+      totalScanned: scannedCount,
+      totalMatched: matchedResults.length,
+      completedAt: new Date(),
+    });
+
+    // Send notification if matched
+    if (userId && matchedResults.length > 0) {
+      await createNotification({
+        userId,
+        runId: id,
+        title: `發現 ${matchedResults.length} 支飆股！`,
+        content: `今日篩選完成，共掃描 ${scannedCount} 支股票，找到 ${matchedResults.length} 支符合所有條件的飆股。`,
+      }).catch(err => console.error(`[Job ${id}] Notification failed:`, err));
+    }
+
+  } catch (e) {
+    console.error(`[Job ${id}] Error:`, e);
+    await updateScreenerRun(id, {
+      status: "failed",
+      errorMessage: String(e),
+      completedAt: new Date(),
+    });
+  }
+}
+
+// ─── 圖表數據 ──────────────────────────────────────────────────────────────
+
+export async function getChartData(
+  symbol: string,
+  periodDays = 90
+): Promise<ChartData | null> {
+  const allBars = await getStockData(symbol, periodDays);
+  if (!allBars || allBars.length === 0) return null;
+
+  // 根據 periodDays 前後切片 (通常取最後 N 天)
+  const bars = allBars.slice(-periodDays);
+  const close = bars.map((b) => b.close);
+  const volume = bars.map((b) => b.volume);
+
+  return {
+    dates: bars.map((b) => b.date),
+    ohlcv: bars,
+    ma5: calcMa(close, 5),
+    ma10: calcMa(close, 10),
+    ma20: calcMa(close, 20),
+    ma40: calcMa(close, 40),
+    obv: calcObv(close, volume).map(round2),
+    vr26: calcVr(close, volume, 26),
+  };
+}
+
+// ─── 即時報價 ──────────────────────────────────────────────────────────────
+
+export async function getQuote(symbol: string) {
+  try {
+    const result = await yahooFinance.quoteSummary(`${symbol}.TW`, {
+      modules: ["price"],
+    }, { validateResult: false });
+    const price = result.price;
+    return {
+      symbol,
+      price: price?.regularMarketPrice ?? null,
+      previousClose: price?.regularMarketPreviousClose ?? null,
+      volume: price?.regularMarketVolume ?? null,
+      marketCap: price?.marketCap ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
