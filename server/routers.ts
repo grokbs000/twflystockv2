@@ -218,8 +218,8 @@ export const appRouter = router({
             await createNotification({
               userId: ctx.user.id,
               runId,
-              title: `發現 ${input.totalMatched} 支飆股！`,
-              content: `今日篩選完成，共掃描 ${input.totalScanned} 支股票，找到 ${input.totalMatched} 支符合所有條件的飆股。`,
+              title: `發現 ${input.totalMatched} 支優質股！`,
+              content: `今日篩選完成，共掃描 ${input.totalScanned} 支股票，找到 ${input.totalMatched} 支符合所有條件的優質股。`,
             });
           }
 

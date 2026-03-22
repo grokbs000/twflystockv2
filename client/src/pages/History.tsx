@@ -73,7 +73,7 @@ function exportToCsv(results: unknown[], runDate: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `飆股篩選_${runDate}_${timestamp}.csv`;
+  a.download = `優質股篩選_${runDate}_${timestamp}.csv`;
   a.click();
   URL.revokeObjectURL(url);
   toast.success(`已匯出 ${results.length} 支股票資料`);
@@ -205,7 +205,7 @@ export default function History() {
                       {runDetail.run.runDate} 篩選結果
                     </h2>
                     <p className="text-xs sm:text-sm text-muted-foreground">
-                      掃描 {runDetail.run.totalScanned} 支 · 找到 {runDetail.run.totalMatched} 支飆股
+                      掃描 {runDetail.run.totalScanned} 支 · 找到 {runDetail.run.totalMatched} 支優質股
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">

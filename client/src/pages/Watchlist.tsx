@@ -79,12 +79,12 @@ export default function Watchlist() {
             </div>
             <div className="text-center">
               <h3 className="text-base font-semibold text-foreground mb-1">觀察清單為空</h3>
-              <p className="text-muted-foreground text-sm">在飆股雷達頁面點擊書籤圖示，即可將股票加入觀察清單</p>
+              <p className="text-muted-foreground text-sm">在優質股雷達頁面點擊書籤圖示，即可將股票加入觀察清單</p>
             </div>
             <Link href="/">
               <Button variant="outline" size="sm">
                 <TrendingUp className="w-4 h-4 mr-2" />
-                前往飆股雷達
+                前往優質股雷達
               </Button>
             </Link>
           </div>

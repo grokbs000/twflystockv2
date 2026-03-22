@@ -820,8 +820,8 @@ export async function startScreenJob(
       await createNotification({
         userId,
         runId: id,
-        title: `發現 ${matchedResults.length} 支飆股！`,
-        content: `今日篩選完成，共掃描 ${scannedCount} 支股票，找到 ${matchedResults.length} 支符合所有條件的飆股。`,
+        title: `發現 ${matchedResults.length} 支優質股！`,
+        content: `今日篩選完成，共掃描 ${scannedCount} 支股票，找到 ${matchedResults.length} 支符合所有條件的優質股。`,
       }).catch(err => console.error(`[Job ${id}] Notification failed:`, err));
     }
 

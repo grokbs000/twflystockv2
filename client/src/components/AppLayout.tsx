@@ -28,7 +28,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 
 const navItems = [
-  { path: "/", label: "飆股雷達", icon: TrendingUp },
+  { path: "/", label: "優質股雷達", icon: TrendingUp },
   { path: "/watchlist", label: "觀察清單", icon: BookMarked },
   { path: "/history", label: "篩選歷史", icon: History },
   { path: "/notifications", label: "通知中心", icon: Bell, showBadge: true },
@@ -65,7 +65,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
           </div>
           {!collapsed && (
             <div className="overflow-hidden">
-              <div className="text-sm font-bold text-sidebar-foreground leading-tight">台股飆股</div>
+              <div className="text-sm font-bold text-sidebar-foreground leading-tight">台灣優質股票雷達站</div>
               <div className="text-xs text-muted-foreground leading-tight">篩選器</div>
             </div>
           )}

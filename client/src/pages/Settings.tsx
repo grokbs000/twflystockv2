@@ -170,7 +170,7 @@ export default function Settings() {
             {/* ── 通知設定 ── */}
             <SettingSection
               title="每日自動篩選通知"
-              description="開啟後，每天台股收盤後（14:35）將自動執行飆股篩選，並以站內通知告知結果"
+              description="開啟後，每天台股收盤後（14:35）將自動執行優質股篩選，並以站內通知告知結果"
               icon={<Bell className="w-4 h-4 text-amber-400" />}
               accent
             >
@@ -193,7 +193,7 @@ export default function Settings() {
               </div>
               <div className="mt-3 rounded-lg bg-amber-500/5 border border-amber-500/20 p-3">
                 <p className="text-xs text-amber-400/80">
-                  💡 開啟後，系統將在每個交易日下午 2:35 自動執行篩選，找到飆股後立即推送通知到「通知中心」。
+                  💡 開啟後，系統將在每個交易日下午 2:35 自動執行篩選，找到優質股後立即推送通知到「通知中心」。
                 </p>
               </div>
             </SettingSection>

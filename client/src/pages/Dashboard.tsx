@@ -27,7 +27,7 @@ function exportToCsv(results: unknown[]) {
     now.getHours().toString().padStart(2, '0') + 
     now.getMinutes().toString().padStart(2, '0');
   
-  const filename = `飆股篩選結果_${timestamp}.csv`;
+  const filename = `優質股篩選結果_${timestamp}.csv`;
 
   const headers = [
     "股票代碼", "股票名稱", "現價", "漲跌", "漲跌幅(%)",
@@ -191,7 +191,7 @@ export default function Dashboard() {
               <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-primary/20 flex items-center justify-center shrink-0">
                 <TrendingUp className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-primary" />
               </div>
-              <h1 className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">飆股雷達</h1>
+              <h1 className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">優質股雷達</h1>
               {serviceStatus?.online ? (
                 <Badge className="bg-primary/15 text-primary border-primary/30 text-xs">● 服務在線</Badge>
               ) : serviceStatus === undefined ? (
@@ -354,7 +354,7 @@ export default function Dashboard() {
                   <Sparkles className="w-4 h-4 text-chart-1" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground leading-none mb-1">已發現飆股</p>
+                  <p className="text-xs text-muted-foreground leading-none mb-1">已發現優質股</p>
                   <p className="text-lg font-bold font-num text-foreground leading-none">
                     <span className={liveProgress.matched > 0 ? "text-chart-1" : "text-muted-foreground"}>
                       {liveProgress.matched.toLocaleString()}
@@ -387,7 +387,7 @@ export default function Dashboard() {
               <div className="border-t border-primary/15 pt-3">
                 <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
                   <Zap className="w-3 h-3 text-primary" />
-                  最新發現的飆股
+                  最新發現的優質股
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {(liveMatches as ScreenerResult[]).map((s, i) => {
@@ -483,12 +483,12 @@ function EmptyState({ isAuthenticated, hasRun }: { isAuthenticated: boolean; has
       </div>
       <div className="text-center px-4">
         <h3 className="text-base sm:text-lg font-semibold text-foreground mb-2">
-          {hasRun ? "目前沒有符合條件的飆股" : "尚未執行篩選"}
+          {hasRun ? "目前沒有符合條件的優質股" : "尚未執行篩選"}
         </h3>
         <p className="text-muted-foreground text-sm max-w-sm">
           {hasRun
             ? "目前市場中沒有同時滿足所有技術指標條件的股票，可嘗試降低篩選條件數量"
-            : "點擊右上角「執行篩選」按鈕，開始掃描台股飆股"}
+            : "點擊右上角「執行篩選」按鈕，開始掃描台灣優質股票雷達站"}
         </p>
       </div>
     </div>

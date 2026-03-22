@@ -88,7 +88,7 @@ export default function RunScreenerButton({ onComplete, onProgress, onMatch, sel
       };
 
       if (job.status === "pending") {
-        toast.loading("飆股篩選啟動中...", { id: "screener-run" });
+        toast.loading("優質股篩選啟動中...", { id: "screener-run" });
         return;
       }
 
@@ -102,11 +102,11 @@ export default function RunScreenerButton({ onComplete, onProgress, onMatch, sel
 
         const pct = total > 0 ? Math.round((scanned / total) * 100) : 0;
         toast.loading(
-          `掃描中 ${scanned}/${total}（${pct}%）· 發現 ${matched} 支飆股`,
+          `掃描中 ${scanned}/${total}（${pct}%）· 發現 ${matched} 支優質股`,
           { id: "screener-run" }
         );
 
-        // 即時推送新發現的飆股
+        // 即時推送新發現的優質股
         const currentMatches = job.matches ?? [];
         if (currentMatches.length > prevMatchedRef.current) {
           const newMatches = currentMatches.slice(prevMatchedRef.current);
@@ -132,7 +132,7 @@ export default function RunScreenerButton({ onComplete, onProgress, onMatch, sel
         } catch { /* ignore DB save errors */ }
 
         toast.success(
-          `篩選完成！掃描 ${job.totalScanned} 支，找到 ${job.totalMatched} 支飆股`,
+          `篩選完成！掃描 ${job.totalScanned} 支，找到 ${job.totalMatched} 支優質股`,
           { id: "screener-run", duration: 5000 }
         );
         setProgress(null);
@@ -186,7 +186,7 @@ export default function RunScreenerButton({ onComplete, onProgress, onMatch, sel
       yieldMin: Number((userSettings as any)?.yieldMin ?? 8.0),
     };
 
-    toast.loading("飆股篩選啟動中...", { id: "screener-run" });
+    toast.loading("優質股篩選啟動中...", { id: "screener-run" });
 
     try {
       // 啟動背景 job
@@ -245,7 +245,7 @@ export default function RunScreenerButton({ onComplete, onProgress, onMatch, sel
               {progress.scanned}/{progress.total}
             </span>
             {progress.matched > 0 && (
-              <span className="text-primary font-medium">+{progress.matched} 飆股</span>
+              <span className="text-primary font-medium">+{progress.matched} 優質股</span>
             )}
           </div>
         </div>

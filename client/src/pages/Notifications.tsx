@@ -50,9 +50,9 @@ export default function Notifications() {
       utils.notifications.unreadCount.invalidate();
       utils.screener.getLatestResults.invalidate();
       if (data.totalMatched > 0) {
-        toast.success(`篩選完成！發現 ${data.totalMatched} 支飆股`);
+        toast.success(`篩選完成！發現 ${data.totalMatched} 支優質股`);
       } else {
-        toast.info("篩選完成，今日未發現符合條件的飆股");
+        toast.info("篩選完成，今日未發現符合條件的優質股");
       }
     },
     onError: (err: any) => toast.error(`篩選失敗：${err.message}`),
