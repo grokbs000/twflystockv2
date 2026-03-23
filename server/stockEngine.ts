@@ -205,12 +205,12 @@ async function fetchFundamentals(): Promise<Map<string, StockFundamentals>> {
       headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" }
     });
     if (r2.ok) {
-      const data2 = await r2.json() as Array<{ SecuritiesCompanyCode: string; YieldPct: string; PBRatio: string }>;
+      const data2 = await r2.json() as Array<{ SecuritiesCompanyCode: string; YieldRatio: string; PriceBookRatio: string }>;
       for (const item of data2) {
         if (!map.has(item.SecuritiesCompanyCode)) {
           map.set(item.SecuritiesCompanyCode, {
-            pbr: parseFloat(item.PBRatio) || null,
-            yield: parseFloat(item.YieldPct) || null
+            pbr: parseFloat(item.PriceBookRatio) || null,
+            yield: parseFloat(item.YieldRatio) || null
           });
         }
       }
@@ -600,7 +600,7 @@ function checkPbr(pbr: number | null, max = 1.2): ConditionResult {
   return { pass: pbr <= max, pbrValue: pbr, max };
 }
 
-function checkYield(yieldVal: number | null, min = 8.0): ConditionResult {
+function checkYield(yieldVal: number | null, min = 5.0): ConditionResult {
   if (yieldVal === null) return { pass: false, reason: "殖利率數據不可用" };
   return { pass: yieldVal >= min, yieldValue: yieldVal, min };
 }

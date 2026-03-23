@@ -25,7 +25,7 @@ const DEFAULTS = {
   kdSmooth: 3,
   monthlyKdThreshold: 30,
   pbrMax: 1.2,
-  yieldMin: 8.0,
+  yieldMin: 5.0,
 };
 
 export default function Settings() {

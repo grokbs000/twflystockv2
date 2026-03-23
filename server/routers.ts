@@ -105,7 +105,7 @@ export const appRouter = router({
           kdSmooth: Number(input.settings?.kdSmooth ?? userSettings?.kdSmooth ?? 3),
           monthlyKdThreshold: Number(input.settings?.monthlyKdThreshold ?? userSettings?.monthlyKdThreshold ?? 30.0),
           pbrMax: Number(input.settings?.pbrMax ?? userSettings?.pbrMax ?? 1.2),
-          yieldMin: Number(input.settings?.yieldMin ?? userSettings?.yieldMin ?? 8.0),
+          yieldMin: Number(input.settings?.yieldMin ?? userSettings?.yieldMin ?? 5.0),
         };
 
         // 建立篩選執行記錄
@@ -304,7 +304,7 @@ export const appRouter = router({
           kdSmooth: 3,
           monthlyKdThreshold: 30.0,
           pbrMax: 1.2,
-          yieldMin: 8.0,
+          yieldMin: 5.0,
           autoRunEnabled: false,
           isDefault: true,
         };
@@ -316,7 +316,7 @@ export const appRouter = router({
         kdSmooth: settings.kdSmooth ?? 3,
         monthlyKdThreshold: settings.monthlyKdThreshold ?? 30.0,
         pbrMax: settings.pbrMax ?? 1.2,
-        yieldMin: settings.yieldMin ?? 8.0,
+        yieldMin: settings.yieldMin ?? 5.0,
       };
     }),
 
@@ -462,7 +462,7 @@ export const appRouter = router({
         kdSmooth: Number(userSettings?.kdSmooth ?? 3),
         monthlyKdThreshold: Number(userSettings?.monthlyKdThreshold ?? 30.0),
         pbrMax: Number(userSettings?.pbrMax ?? 1.2),
-        yieldMin: Number(userSettings?.yieldMin ?? 8.0),
+        yieldMin: Number(userSettings?.yieldMin ?? 5.0),
       };
 
       const today = new Date().toISOString().split("T")[0];
